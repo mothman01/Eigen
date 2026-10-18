@@ -5,48 +5,89 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Eigen — Live Demo</title>
     <style>
+        :root {
+            --bg: #0b0f19;
+            --panel: #0a0e16;
+            --surface: #121826;
+            --accent: #00ffcc;
+            --accent-dim: #00ccaa;
+            --text: #e2e8f0;
+            --text-muted: #7a8aa0;
+            --border: #1e2230;
+            --input-border: #2a3348;
+            --user-bubble: #1a2233;
+            --eigen-bubble: #0f2b26;
+            --disabled: #2a3348;
+        }
+        :root[data-theme="light"] {
+            --bg: #f4f6f9;
+            --panel: #ffffff;
+            --surface: #ffffff;
+            --accent: #0f5fa8;
+            --accent-dim: #0b4f8a;
+            --text: #1a2333;
+            --text-muted: #5b6472;
+            --border: #d1d5db;
+            --input-border: #c9ced6;
+            --user-bubble: #eef1f5;
+            --eigen-bubble: #e7eefb;
+            --disabled: #d1d5db;
+        }
         * { box-sizing: border-box; }
         body {
             font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
-            background: #0b0f19; color: #00ffcc; margin: 0; padding: 20px;
+            background: var(--bg); color: var(--accent); margin: 0; padding: 20px;
             min-height: 100vh; display: flex; flex-direction: column;
         }
         header {
             display: flex; justify-content: space-between; align-items: center;
-            border-bottom: 1px solid #2a2a3a; padding-bottom: 14px; margin-bottom: 18px;
+            border-bottom: 1px solid var(--border); padding-bottom: 14px; margin-bottom: 18px;
+            gap: 12px; flex-wrap: wrap;
         }
-        header h1 { margin: 0; font-size: 18px; color: #e2e8f0; }
+        header h1 { margin: 0; font-size: 18px; color: var(--text); }
+        .header-right { display: flex; align-items: center; gap: 14px; }
+        .header-stats { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
         #status { font-size: 12px; color: #f59e0b; }
-        #counter { font-size: 12px; color: #7a8aa0; text-align: right; }
-        #counter b { color: #00ffcc; }
+        #counter { font-size: 12px; color: var(--text-muted); text-align: right; }
+        #counter b { color: var(--accent); }
+        .theme-toggle {
+            background: transparent; border: 1px solid var(--border); color: var(--text);
+            padding: 6px 12px; border-radius: 999px; font-size: 0.75rem; font-weight: 700;
+            cursor: pointer; font-family: inherit; text-transform: uppercase; letter-spacing: 1px;
+            transition: border-color 0.2s ease, color 0.2s ease;
+        }
+        .theme-toggle:hover, .theme-toggle:focus-visible { border-color: var(--accent); color: var(--accent); }
         .chat {
             flex: 1; display: flex; flex-direction: column; gap: 10px;
-            overflow-y: auto; padding: 16px; background: #0a0e16;
-            border: 1px solid #1e2230; border-radius: 8px; min-height: 50vh;
+            overflow-y: auto; padding: 16px; background: var(--panel);
+            border: 1px solid var(--border); border-radius: 8px; min-height: 50vh;
         }
         .msg { padding: 10px 12px; border-radius: 6px; max-width: 85%; white-space: pre-wrap; word-break: break-word; font-size: 14px; }
-        .msg.user { background: #1a2233; color: #e2e8f0; align-self: flex-end; }
-        .msg.eigen { background: #0f2b26; color: #00ffcc; align-self: flex-start; }
+        .msg.user { background: var(--user-bubble); color: var(--text); align-self: flex-end; }
+        .msg.eigen { background: var(--eigen-bubble); color: var(--accent); align-self: flex-start; }
         .input-row { display: flex; gap: 10px; margin-top: 16px; }
         input {
-            flex: 1; background: #121826; border: 1px solid #2a3348; color: #e2e8f0;
+            flex: 1; background: var(--surface); border: 1px solid var(--input-border); color: var(--text);
             padding: 12px; font-family: inherit; font-size: 14px; border-radius: 6px;
         }
         button {
-            background: #00ffcc; color: #04141a; border: none; padding: 12px 22px;
+            background: var(--accent); color: #ffffff; border: none; padding: 12px 22px;
             font-weight: bold; cursor: pointer; font-family: inherit; border-radius: 6px;
         }
-        button:hover { background: #00ccaa; }
-        button:disabled { background: #2a3348; color: #7a8aa0; cursor: not-allowed; }
-        .hint { font-size: 12px; color: #7a8aa0; margin-top: 8px; }
+        button:hover { background: var(--accent-dim); }
+        button:disabled { background: var(--disabled); color: var(--text-muted); cursor: not-allowed; }
+        .hint { font-size: 12px; color: var(--text-muted); margin-top: 8px; }
     </style>
 </head>
 <body>
     <header>
         <h1>Eigen — Live Demo</h1>
-        <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 2px;">
-            <span id="status">Connecting…</span>
-            <span id="counter"></span>
+        <div class="header-right">
+            <div class="header-stats">
+                <span id="status">Connecting…</span>
+                <span id="counter"></span>
+            </div>
+            <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Toggle light or dark mode">Light</button>
         </div>
     </header>
 
@@ -65,6 +106,29 @@
             sessionId = 'pub-' + Math.random().toString(36).slice(2, 10);
             sessionStorage.setItem('eigen_public_session', sessionId);
         }
+
+        (function initThemeToggle() {
+            const btn = document.getElementById('theme-toggle');
+            if (!btn) return;
+            const stored = localStorage.getItem('eigen_theme');
+            if (stored === 'light') document.documentElement.setAttribute('data-theme', 'light');
+            function sync() {
+                const light = document.documentElement.getAttribute('data-theme') === 'light';
+                btn.textContent = light ? 'Dark' : 'Light';
+            }
+            sync();
+            btn.addEventListener('click', () => {
+                const light = document.documentElement.getAttribute('data-theme') === 'light';
+                if (light) {
+                    document.documentElement.removeAttribute('data-theme');
+                    localStorage.setItem('eigen_theme', 'dark');
+                } else {
+                    document.documentElement.setAttribute('data-theme', 'light');
+                    localStorage.setItem('eigen_theme', 'light');
+                }
+                sync();
+            });
+        })();
 
         function esc(s) {
             return String(s).replace(/[&<>"']/g, c => ({
