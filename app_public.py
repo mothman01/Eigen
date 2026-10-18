@@ -21,15 +21,23 @@ import sqlite3
 import threading
 import time
 import re
+import os
 from collections import OrderedDict
 from datetime import datetime
 
 import ollama
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, session, redirect, url_for
 
 app = Flask(__name__)
+app.secret_key = os.environ.get("EIGEN_SECRET_KEY", "dev-secret-change-me")
 
 TEXT_MODEL = "qwen2.5:7b"
+
+# Admin access (env-var password; optional but recommended).
+ADMIN_PASSWORD = os.environ.get("EIGEN_ADMIN_PASSWORD", "")
+
+# IP geolocation service (keyless, best-effort). Set to empty string to disable.
+GEO_API_URL = "http://ip-api.com/json/{ip}?fields=status,country,regionName,city"
 
 MAX_REPLY_CHARS = 1500        # hard cap on any model output (prevents token floods)
 MAX_NUM_RUN = 200             # cap on consecutive digits in output (prevents "repeat numbers")
@@ -261,10 +269,28 @@ def _db():
     conn.execute(
         "CREATE TABLE IF NOT EXISTS public_episodes ("
         "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-        "timestamp TEXT, role TEXT, event_type TEXT, content TEXT)"
+        "timestamp TEXT, role TEXT, event_type TEXT, content TEXT, "
+        "ip TEXT, location TEXT)"
+    )
+    # Migration-safe: add columns if the DB predates them.
+    _ensure_column(conn, "public_episodes", "ip", "TEXT")
+    _ensure_column(conn, "public_episodes", "location", "TEXT")
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS visitors ("
+        "ip TEXT PRIMARY KEY, "
+        "location TEXT, "
+        "first_seen TEXT, "
+        "last_seen TEXT, "
+        "message_count INTEGER)"
     )
     conn.commit()
     return conn
+
+
+def _ensure_column(conn, table, column, ctype):
+    cols = [r["name"] for r in conn.execute(f"PRAGMA table_info({table})")]
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ctype}")
 
 
 def _close_db(conn):
@@ -315,7 +341,7 @@ def _allowed(ip):
                 if not _rate_map[k]:
                     del _rate_map[k]
             _last_cleanup = now
-
+        
         times = _rate_map.setdefault(ip, [])
         times = [t for t in times if now - t < 60]
         if len(times) >= RATE_LIMIT_PER_MIN:
@@ -324,6 +350,92 @@ def _allowed(ip):
         times.append(now)
         _rate_map[ip] = times
         return True
+
+
+def _client_ip():
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.remote_addr or "unknown"
+
+
+# ----------------------------------------------------------------------
+# Geolocation + visitor tracking
+# ----------------------------------------------------------------------
+_geo_cache = {}     # ip -> location string (memoized, best-effort)
+_geo_lock = threading.Lock()
+
+
+def _geolocate(ip):
+    """Resolve an IP to a coarse city/region string (best-effort, cached).
+    Returns '' on any failure so the app never blocks on this."""
+    if not GEO_API_URL or not ip or ip in ("unknown", "127.0.0.1", "localhost"):
+        return ""
+    with _geo_lock:
+        if ip in _geo_cache:
+            return _geo_cache[ip]
+    try:
+        import urllib.request
+        url = GEO_API_URL.format(ip=ip)
+        with urllib.request.urlopen(url, timeout=2) as r:
+            import json as _json
+            data = _json.loads(r.read().decode())
+        if data.get("status") == "success":
+            parts = [p for p in (data.get("city"), data.get("regionName"), data.get("country")) if p]
+            loc = ", ".join(parts) if parts else ""
+        else:
+            loc = ""
+    except Exception:
+        loc = ""
+    with _geo_lock:
+        _geo_cache[ip] = loc
+    return loc
+
+
+def _track_visitor(ip, location):
+    """Upsert a visitor row (by IP) and bump the message count."""
+    conn = _db()
+    try:
+        now = datetime.now().isoformat()
+        conn.execute(
+            "INSERT INTO visitors (ip, location, first_seen, last_seen, message_count) "
+            "VALUES (?, ?, ?, ?, 1) "
+            "ON CONFLICT(ip) DO UPDATE SET "
+            "location = excluded.location, "
+            "last_seen = excluded.last_seen, "
+            "message_count = visitors.message_count + 1",
+            (ip, location, now, now),
+        )
+        conn.commit()
+    finally:
+        _close_db(conn)
+
+
+def get_stats():
+    """Return aggregate stats for the admin page."""
+    conn = _db()
+    try:
+        total_episodes = conn.execute(
+            "SELECT COUNT(*) AS n FROM public_episodes"
+        ).fetchone()["n"]
+        user_msgs = conn.execute(
+            "SELECT COUNT(*) AS n FROM public_episodes WHERE role='public_user'"
+        ).fetchone()["n"]
+        unique_visitors = conn.execute(
+            "SELECT COUNT(*) AS n FROM visitors"
+        ).fetchone()["n"]
+        recent = conn.execute(
+            "SELECT ip, location, last_seen, message_count FROM visitors "
+            "ORDER BY last_seen DESC LIMIT 100"
+        ).fetchall()
+        return {
+            "total_messages": user_msgs,
+            "total_episodes": total_episodes,
+            "unique_visitors": unique_visitors,
+            "recent_visitors": [dict(r) for r in recent],
+        }
+    finally:
+        _close_db(conn)
 
 
 # ----------------------------------------------------------------------
@@ -339,12 +451,6 @@ TEMP_BAN_SECONDS = 3600     # 1 hour temp ban
 PERM_STRIKES = 5            # strikes before a PERMANENT ban
 _STRKE_DECAY = 86400        # strikes older than 1 day are forgotten
 
-
-def _client_ip():
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.remote_addr or "unknown"
 
 
 def _note_strike(ip):
@@ -564,25 +670,76 @@ def api_chat():
     _append_history(session_id, "user", user_message)
     _append_history(session_id, "assistant", reply)
 
+    # Geolocate (best-effort) and track this visitor.
+    location = _geolocate(ip)
+    _track_visitor(ip, location)
+
     # Ephemeral episode logging (isolated store).
     conn = _db()
     try:
         now = datetime.now().isoformat()
         conn.execute(
-            "INSERT INTO public_episodes (timestamp, role, event_type, content) "
-            "VALUES (?, ?, ?, ?)",
-            (now, "public_user", "chat", user_message),
+            "INSERT INTO public_episodes (timestamp, role, event_type, content, ip, location) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (now, "public_user", "chat", user_message, ip, location),
         )
         conn.execute(
-            "INSERT INTO public_episodes (timestamp, role, event_type, content) "
-            "VALUES (?, ?, ?, ?)",
-            (now, "eigen_public", "reply", reply),
+            "INSERT INTO public_episodes (timestamp, role, event_type, content, ip, location) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (now, "eigen_public", "reply", reply, ip, location),
         )
         conn.commit()
     finally:
         _close_db(conn)
 
     return jsonify({"reply": reply})
+
+
+# ----------------------------------------------------------------------
+# Admin + stats
+# ----------------------------------------------------------------------
+def _require_admin():
+    """Return True if the current session has admin access."""
+    return session.get("admin") is True
+
+
+@app.route("/admin", methods=["GET", "POST"])
+def admin():
+    # If no admin password is configured, deny (fail closed).
+    if not ADMIN_PASSWORD:
+        return jsonify({"error": "Admin not configured. Set EIGEN_ADMIN_PASSWORD."}), 503
+
+    if request.method == "POST":
+        if request.form.get("password") == ADMIN_PASSWORD:
+            session["admin"] = True
+            return redirect(url_for("admin"))
+        return render_template("admin_public.html", authed=False, error="Incorrect password.", stats=None)
+
+    if not _require_admin():
+        return render_template("admin_public.html", authed=False, error=None, stats=None)
+
+    stats = get_stats()
+    # Count currently banned IPs (from in-memory offense list).
+    with _offenses_lock:
+        banned_count = sum(1 for r in _offenses.values() if r.get("perm") or (r.get("banned_until") and time.time() < r["banned_until"]))
+    stats["banned_count"] = banned_count
+    return render_template("admin_public.html", authed=True, error=None, stats=stats)
+
+
+@app.route("/api/stats", methods=["GET"])
+def api_stats():
+    """Small public counter (no private data) for the chat page."""
+    conn = _db()
+    try:
+        user_msgs = conn.execute(
+            "SELECT COUNT(*) AS n FROM public_episodes WHERE role='public_user'"
+        ).fetchone()["n"]
+        unique_visitors = conn.execute(
+            "SELECT COUNT(*) AS n FROM visitors"
+        ).fetchone()["n"]
+    finally:
+        _close_db(conn)
+    return jsonify({"conversations": user_msgs, "visitors": unique_visitors})
 
 
 if __name__ == "__main__":

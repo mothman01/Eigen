@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Eigen — Admin</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+            background: #0b0f19; color: #e2e8f0; margin: 0; padding: 24px;
+        }
+        h1 { color: #00ffcc; font-size: 20px; margin: 0 0 8px; }
+        .card {
+            background: #0a0e16; border: 1px solid #1e2230; border-radius: 10px;
+            padding: 20px; margin-bottom: 16px; max-width: 720px;
+        }
+        .stat-grid { display: flex; flex-wrap: wrap; gap: 14px; margin: 16px 0; }
+        .stat {
+            flex: 1; min-width: 120px; background: #0f2b26; border: 1px solid #123a33;
+            border-radius: 8px; padding: 14px; text-align: center;
+        }
+        .stat .num { font-size: 26px; color: #00ffcc; font-weight: bold; }
+        .stat .lbl { font-size: 11px; color: #94a3b8; margin-top: 4px; text-transform: uppercase; letter-spacing: 1px; }
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #1e2230; }
+        th { color: #00ffcc; font-weight: 700; text-transform: uppercase; font-size: 11px; letter-spacing: 1px; }
+        .muted { color: #94a3b8; }
+        input {
+            background: #121826; border: 1px solid #2a3348; color: #e2e8f0;
+            padding: 12px; font-family: inherit; font-size: 14px; border-radius: 6px; width: 100%; max-width: 320px;
+        }
+        button {
+            background: #00ffcc; color: #04141a; border: none; padding: 12px 20px;
+            font-weight: bold; cursor: pointer; font-family: inherit; border-radius: 6px; margin-top: 10px;
+        }
+        .error { color: #ef4444; margin-top: 10px; }
+    </style>
+</head>
+<body>
+    <h1>Eigen — Admin Dashboard</h1>
+
+    {% if not authed %}
+    <div class="card">
+        <form method="post">
+            <div>Enter admin password:</div>
+            <input type="password" name="password" autofocus>
+            <br>
+            <button type="submit">Login</button>
+            {% if error %}<div class="error">{{ error }}</div>{% endif %}
+        </form>
+    </div>
+    {% else %}
+    <div class="card">
+        <div>Eigen public demo — live traffic stats.</div>
+
+        <div class="stat-grid">
+            <div class="stat">
+                <div class="num">{{ stats.total_messages }}</div>
+                <div class="lbl">Conversations</div>
+            </div>
+            <div class="stat">
+                <div class="num">{{ stats.unique_visitors }}</div>
+                <div class="lbl">Unique visitors</div>
+            </div>
+            <div class="stat">
+                <div class="num">{{ stats.banned_count }}</div>
+                <div class="lbl">Banned IPs</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div style="margin-bottom: 12px;">Recent visitors (by location)</div>
+        {% if stats.recent_visitors %}
+        <table>
+            <thead>
+                <tr>
+                    <th>Location</th>
+                    <th>IP</th>
+                    <th>Messages</th>
+                    <th>Last seen</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for v in stats.recent_visitors %}
+                <tr>
+                    <td>{{ v.location or '—' }}</td>
+                    <td class="muted">{{ v.ip }}</td>
+                    <td>{{ v.message_count }}</td>
+                    <td class="muted">{{ v.last_seen }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <div class="muted">No visitors recorded yet.</div>
+        {% endif %}
+    </div>
+    {% endif %}
+</body>
+</html>
