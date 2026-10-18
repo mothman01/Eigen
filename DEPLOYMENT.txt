@@ -1,0 +1,188 @@
+================================================================================
+EIGEN — PUBLIC DEMO PORTAL  (deployment runbook)
+================================================================================
+
+WHAT THIS IS
+------------
+A recruiter-facing, SANDBOXED copy of Eigen. It runs alongside the private
+portal but on a different port (:5001) and with complete data isolation:
+
+  * Private portal     -> app.py  -> :5000  (LAN only, full memory + family)
+  * Public demo        -> app_public.py -> :5001  (internet, empty/sanitized)
+
+The public demo has:
+  * Its own system prompt with ZERO personal facts (no names, no home details).
+  * Its own empty memory/DB (never touches eigen_memory.db or ChromaDB).
+  * Recalled-context disabled (no private recollection can leak).
+  * A tiny read-only tool sandbox (math + uptime) with NO filesystem/web/shell.
+  * Per-IP rate limiting.
+
+WHY THIS IS SAFE
+----------------
+Privacy is enforced by ARCHITECTURE, not a prompt. The public process cannot
+reach the private memory because it simply never loads it — it uses a separate
+SQLite file (eigen_public.db) and never imports the private memory helpers.
+
+--------------------------------------------------------------------------------
+STEP 1 — Copy the files to the Dell
+--------------------------------------------------------------------------------
+On your Windows machine (or via any SCP method), push these two files:
+
+    app_public.py                  ->  /home/eigen/app_public.py
+    templates/index_public.html    ->  /home/eigen/templates/index_public.html
+
+As the eigen user on the Dell:
+
+    scp app_public.py eigen@DELL_IP:/home/eigen/app_public.py
+    scp templates/index_public.html eigen@DELL_IP:/home/eigen/templates/index_public.html
+
+--------------------------------------------------------------------------------
+STEP 2 — Test it locally on the Dell (before exposing it)
+--------------------------------------------------------------------------------
+On the Dell, as the eigen user:
+
+    cd /home/eigen
+    source eigen_env/bin/activate
+    python app_public.py
+
+Then from a browser on the LOCAL network, open:
+
+    http://192.168.1.32:5001
+
+Chat with Eigen. Confirm:
+  * He responds normally.
+  * He does NOT mention family/personal details (there is nothing to leak).
+  * The tool sandbox works if you ask "what's gamma at 0.5c?" or
+    "prime factor 360" or "how long have you been running?".
+
+Stop it with Ctrl+C when done testing.
+
+--------------------------------------------------------------------------------
+STEP 3 — Run it as a persistent service (systemd)
+--------------------------------------------------------------------------------
+Create /home/eigen/.config/systemd/user/eigen-public.service :
+
+    [Unit]
+    Description=Eigen Public Demo Portal
+    After=network.target
+
+    [Service]
+    WorkingDirectory=/home/eigen
+    ExecStart=/home/eigen/eigen_env/bin/python /home/eigen/app_public.py
+    Restart=on-failure
+    Environment=PYTHONUNBUFFERED=1
+
+    [Install]
+    WantedBy=default.target
+
+Then enable + start it:
+
+    systemctl --user daemon-reload
+    systemctl --user enable --now eigen-public.service
+    systemctl --user status eigen-public.service
+
+(If the eigen user is not set up for lingering user services, also run:
+    loginctl enable-linger eigen
+so the service keeps running after you log out.)
+
+--------------------------------------------------------------------------------
+STEP 4 — Expose the public demo at https://eigen.heigen.io (free, no open ports)
+--------------------------------------------------------------------------------
+Assumption: Ubuntu on the Dell, and heigen.io's nameservers are pointing at
+Cloudflare (so Cloudflare is authoritative for the zone). If you are unsure,
+run the step-4 verification first.
+
+4a. Install cloudflared (one-time, as a user with sudo):
+
+    sudo mkdir -p --mode=0755 /usr/share/keyrings
+    curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg \
+      | sudo tee /usr/share/keyrings/cloudflare-main.gpg >/dev/null
+    echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main" \
+      | sudo tee /etc/apt/sources.list.d/cloudflared.list
+    sudo apt-get update && sudo apt-get install cloudflared
+    cloudflared --version
+
+4b. Log in to Cloudflare (this prints a URL; open it in a browser and authorize
+    the heigen.io account):
+
+    cloudflared tunnel login
+
+4c. Create the named tunnel (this writes a credentials JSON with a tunnel UUID
+    and prints the UUID):
+
+    cloudflared tunnel create eigen-public
+
+4d. Route the subdomain to the tunnel. This creates a CNAME record pointing
+    eigen.heigen.io -> <tunnel-id>.cfargotunnel.com automatically:
+
+    cloudflared tunnel route dns eigen-public eigen.heigen.io
+
+4e. Run the tunnel pointing at the local Python app:
+
+    cloudflared tunnel run --url http://localhost:5001 eigen-public
+
+    Wait ~30-60s for DNS to propagate, then confirm in a browser:
+        https://eigen.heigen.io
+
+VERIFY Cloudflare is authoritative (optional but recommended):
+
+    curl -s "https://cloudflare-dns.com/dns-query?name=heigen.io&type=NS" \
+      -H "accept: application/dns-json" | python3 -m json.tool
+
+    The NS records must refer to *.ns.cloudflare.com. If they do not, the CNAME
+    route above will NOT resolve — go into the Cloudflare dashboard and ensure
+    heigen.io is "Active" with Cloudflare nameservers set at your registrar.
+
+--------------------------------------------------------------------------------
+STEP 5 — Add a Cloudflare Access login gate (email one-time-code)
+--------------------------------------------------------------------------------
+This lets anyone enter their email and receive a one-time code — recruiter-
+-friendly and no account needed, but prevents anonymous GPU abuse.
+
+In the Cloudflare Zero Trust dashboard (one.cloudflare.com):
+  1. Access -> Applications -> Add an application -> Self-hosted.
+  2. Name it "Eigen Public Demo".
+  3. Application domain: eigen.heigen.io (leave path empty).
+  4. Policy: Action = Allow; Include = Emails (entry) then set the selector
+     to enable "anyone with an email" OR list specific recruiter emails.
+  5. Leave the session duration at default (e.g. 24h) and save.
+
+Because the tunnel is already routing eigen.heigen.io, Cloudflare Access will
+automatically sit in front of it with no changes to app_public.py.
+
+If you prefer NO gate, delete/disable the Access application — the per-IP rate
+limiter in app_public.py still throttles abuse either way.
+
+--------------------------------------------------------------------------------
+STEP 6 — Run the tunnel as a persistent service (survives reboots)
+--------------------------------------------------------------------------------
+Once testing succeeds, stop the foreground tunnel (Ctrl+C) and install it as a
+systemd service so it restarts automatically.
+
+    sudo cloudflared service install
+
+Then ensure the service uses your named tunnel (edit the config if needed):
+
+    sudo cloudflared tunnel list
+    sudo systemctl enable --now cloudflared
+    sudo systemctl status cloudflared
+
+(cloudflared reads the tunnel config from ~/.cloudflared/config.yml.
+See https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/configure-tunnels/local-management/ )
+
+--------------------------------------------------------------------------------
+STEP 7 — Link https://eigen.heigen.io from your resume
+--------------------------------------------------------------------------------
+In resume/index.html, add the public URL to the sidebar "Live Projects" list
+and/or the "Eigen" project card. Swap any https://github.com/mothman01 link in
+the Eigen card for https://eigen.heigen.io so recruiters can talk to him live.
+
+--------------------------------------------------------------------------------
+TROUBLESHOOTING
+--------------------------------------------------------------------------------
+* Port in use: change the port in app_public.py (last line) and re-run.
+* Model missing: ensure "qwen2.5:7b" is pulled (ollama pull qwen2.5:7b).
+* Tool loop errors: ensure your ollama version supports the tools= argument
+  (ollama >= 0.1.x with function-calling support). If not, the sandbox tools
+  are optional — Eigen will still chat without them.
+================================================================================

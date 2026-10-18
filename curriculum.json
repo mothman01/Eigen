@@ -1,0 +1,28 @@
+{
+    "stages": [
+        {
+            "id": 1,
+            "name": "engineering + personal",
+            "duration_days": 7,
+            "active": true,
+            "experts": ["engineer", "family"],
+            "note": "Concrete, grounded foundations: engineering textbooks + curated personal/family data."
+        },
+        {
+            "id": 2,
+            "name": "humanities + social media",
+            "duration_days": 7,
+            "active": false,
+            "experts": ["social"],
+            "note": "Broader human context: humanities, communication, social dynamics."
+        },
+        {
+            "id": 3,
+            "name": "abstract thought",
+            "duration_days": 7,
+            "active": false,
+            "experts": ["social", "family"],
+            "note": "Philosophy, abstraction, self-reflection, relationships between ideas."
+        }
+    ]
+}

@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Eigen — Live Demo</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+            background: #0b0f19; color: #00ffcc; margin: 0; padding: 20px;
+            min-height: 100vh; display: flex; flex-direction: column;
+        }
+        header {
+            display: flex; justify-content: space-between; align-items: center;
+            border-bottom: 1px solid #2a2a3a; padding-bottom: 14px; margin-bottom: 18px;
+        }
+        header h1 { margin: 0; font-size: 18px; color: #e2e8f0; }
+        #status { font-size: 12px; color: #f59e0b; }
+        .chat {
+            flex: 1; display: flex; flex-direction: column; gap: 10px;
+            overflow-y: auto; padding: 16px; background: #0a0e16;
+            border: 1px solid #1e2230; border-radius: 8px; min-height: 50vh;
+        }
+        .msg { padding: 10px 12px; border-radius: 6px; max-width: 85%; white-space: pre-wrap; word-break: break-word; font-size: 14px; }
+        .msg.user { background: #1a2233; color: #e2e8f0; align-self: flex-end; }
+        .msg.eigen { background: #0f2b26; color: #00ffcc; align-self: flex-start; }
+        .input-row { display: flex; gap: 10px; margin-top: 16px; }
+        input {
+            flex: 1; background: #121826; border: 1px solid #2a3348; color: #e2e8f0;
+            padding: 12px; font-family: inherit; font-size: 14px; border-radius: 6px;
+        }
+        button {
+            background: #00ffcc; color: #04141a; border: none; padding: 12px 22px;
+            font-weight: bold; cursor: pointer; font-family: inherit; border-radius: 6px;
+        }
+        button:hover { background: #00ccaa; }
+        button:disabled { background: #2a3348; color: #7a8aa0; cursor: not-allowed; }
+        .hint { font-size: 12px; color: #7a8aa0; margin-top: 8px; }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Eigen — Live Demo</h1>
+        <span id="status">Connecting…</span>
+    </header>
+
+    <div class="chat" id="chat"></div>
+
+    <div class="input-row">
+        <input type="text" id="msgInput" placeholder="Ask Eigen how he works…" autofocus
+               onkeydown="if(event.key==='Enter') sendMsg()">
+        <button id="sendBtn" onclick="sendMsg()">Send</button>
+    </div>
+    <p class="hint">This is a sandboxed public demo of Eigen's architecture — no private data is connected.</p>
+
+    <script>
+        let sessionId = sessionStorage.getItem('eigen_public_session');
+        if (!sessionId) {
+            sessionId = 'pub-' + Math.random().toString(36).slice(2, 10);
+            sessionStorage.setItem('eigen_public_session', sessionId);
+        }
+
+        function esc(s) {
+            return String(s).replace(/[&<>"']/g, c => ({
+                '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+            }[c]));
+        }
+
+        function addMsg(role, text) {
+            const chat = document.getElementById('chat');
+            chat.innerHTML += `<div class="msg ${role}">${esc(text)}</div>`;
+            chat.scrollTop = chat.scrollHeight;
+        }
+
+        async function sendMsg() {
+            const input = document.getElementById('msgInput');
+            const btn = document.getElementById('sendBtn');
+            const text = input.value.trim();
+            if (!text) return;
+
+            addMsg('user', text);
+            input.value = '';
+            btn.disabled = true;
+
+            try {
+                const res = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({message: text, session_id: sessionId})
+                });
+                const data = await res.json();
+                addMsg('eigen', data.reply || '(no reply)');
+                document.getElementById('status').textContent = 'System Ready';
+                document.getElementById('status').style.color = '#1D9E75';
+            } catch (e) {
+                addMsg('eigen', '[connection error: ' + e + ']');
+                document.getElementById('status').textContent = 'Offline';
+                document.getElementById('status').style.color = '#ef4444';
+            } finally {
+                btn.disabled = false;
+                input.focus();
+            }
+        }
+
+        (async function checkStatus() {
+            try {
+                const res = await fetch('/api/status');
+                const data = await res.json();
+                if (data.ok) {
+                    document.getElementById('status').textContent = 'System Ready · ' + data.model;
+                    document.getElementById('status').style.color = '#1D9E75';
+                }
+            } catch (e) {
+                document.getElementById('status').textContent = 'Offline';
+                document.getElementById('status').style.color = '#ef4444';
+            }
+        })();
+    </script>
+</body>
+</html>
